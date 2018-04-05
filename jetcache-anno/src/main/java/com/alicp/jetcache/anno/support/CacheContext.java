@@ -6,14 +6,12 @@ package com.alicp.jetcache.anno.support;
 import com.alicp.jetcache.Cache;
 import com.alicp.jetcache.CacheConfigException;
 import com.alicp.jetcache.MultiLevelCacheBuilder;
-import com.alicp.jetcache.RefreshCache;
 import com.alicp.jetcache.anno.CacheConsts;
 import com.alicp.jetcache.anno.CacheType;
 import com.alicp.jetcache.anno.EnableCache;
 import com.alicp.jetcache.anno.method.CacheHandler;
 import com.alicp.jetcache.anno.method.CacheInvokeConfig;
 import com.alicp.jetcache.anno.method.CacheInvokeContext;
-import com.alicp.jetcache.anno.method.ClassUtil;
 import com.alicp.jetcache.embedded.EmbeddedCacheBuilder;
 import com.alicp.jetcache.external.ExternalCacheBuilder;
 import com.alicp.jetcache.support.DefaultCacheMonitor;
@@ -21,8 +19,6 @@ import com.alicp.jetcache.support.DefaultCacheMonitorManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +38,7 @@ public class CacheContext {
         }
     };
 
-    private ConfigProvider configProvider = new ConfigProvider();
+    private ConfigProvider configProvider;
     private GlobalCacheConfig globalCacheConfig;
 
     private DefaultCacheMonitorManager defaultCacheMonitorManager;
@@ -50,15 +46,13 @@ public class CacheContext {
 
     public CacheContext(GlobalCacheConfig globalCacheConfig) {
         this.globalCacheConfig = globalCacheConfig;
+        this.configProvider = globalCacheConfig.getConfigProvider();
     }
 
-    protected void setConfigProvider(ConfigProvider configProvider) {
-        this.configProvider = configProvider;
-    }
-
-    @PostConstruct
     public synchronized void init() {
         if (cacheManager == null) {
+            CacheNameGenerator g = configProvider.createCacheNameGenerator(globalCacheConfig.getHiddenPackages());
+
             this.cacheManager = new ConcurrentHashMap<>();
             if (globalCacheConfig.getStatIntervalMinutes() > 0) {
                 defaultCacheMonitorManager = new DefaultCacheMonitorManager(globalCacheConfig.getStatIntervalMinutes(),
@@ -68,7 +62,6 @@ public class CacheContext {
         }
     }
 
-    @PreDestroy
     public synchronized void shutdown() {
         if (defaultCacheMonitorManager != null) {
             defaultCacheMonitorManager.stop();
@@ -111,7 +104,7 @@ public class CacheContext {
         String area = ac.getArea();
         String cacheName = ac.getName();
         if (CacheConsts.UNDEFINED_STRING.equalsIgnoreCase(cacheName)) {
-            cacheName = ClassUtil.generateCacheName(method, hiddenPackages);
+            cacheName = configProvider.createCacheNameGenerator(hiddenPackages).generateCacheName(method);
         }
         Cache cache = __createOrGetCache(ac, area, cacheName);
         return cache;
@@ -124,7 +117,12 @@ public class CacheContext {
             synchronized (this) {
                 cache = cacheManager.get(fullCacheName);
                 if (cache == null) {
-                    cache = buildCache(cachedAnnoConfig, area, fullCacheName);
+                    if (globalCacheConfig.isAreaInCacheName()) {
+                        // for compatible reason, if we use default configuration, the prefix should same to that version <=2.4.3
+                        cache = buildCache(cachedAnnoConfig, area, fullCacheName);
+                    } else {
+                        cache = buildCache(cachedAnnoConfig, area, cacheName);
+                    }
                     cacheManager.put(fullCacheName, cache);
                 }
             }
@@ -132,20 +130,20 @@ public class CacheContext {
         return cache;
     }
 
-    protected Cache buildCache(CachedAnnoConfig cachedAnnoConfig, String area, String fullCacheName) {
+    protected Cache buildCache(CachedAnnoConfig cachedAnnoConfig, String area, String cacheName) {
         Cache cache;
         if (cachedAnnoConfig.getCacheType() == CacheType.LOCAL) {
             cache = buildLocal(cachedAnnoConfig, area);
         } else if (cachedAnnoConfig.getCacheType() == CacheType.REMOTE) {
-            cache = buildRemote(cachedAnnoConfig, area, fullCacheName);
+            cache = buildRemote(cachedAnnoConfig, area, cacheName);
         } else {
             Cache local = buildLocal(cachedAnnoConfig, area);
-            Cache remote = buildRemote(cachedAnnoConfig, area, fullCacheName);
+            Cache remote = buildRemote(cachedAnnoConfig, area, cacheName);
 
             if (defaultCacheMonitorManager != null) {
-                DefaultCacheMonitor localMonitor = new DefaultCacheMonitor(fullCacheName + "_local");
+                DefaultCacheMonitor localMonitor = new DefaultCacheMonitor(cacheName + "_local");
                 local.config().getMonitors().add(localMonitor);
-                DefaultCacheMonitor remoteMonitor = new DefaultCacheMonitor(fullCacheName + "_remote");
+                DefaultCacheMonitor remoteMonitor = new DefaultCacheMonitor(cacheName + "_remote");
                 remote.config().getMonitors().add(remoteMonitor);
                 defaultCacheMonitorManager.add(localMonitor, remoteMonitor);
             }
@@ -159,7 +157,7 @@ public class CacheContext {
         cache = new CacheHandler.CacheHandlerRefreshCache(cache);
 
         if (defaultCacheMonitorManager != null) {
-            DefaultCacheMonitor monitor = new DefaultCacheMonitor(fullCacheName);
+            DefaultCacheMonitor monitor = new DefaultCacheMonitor(cacheName);
             cache.config().getMonitors().add(monitor);
             defaultCacheMonitorManager.add(monitor);
         }
@@ -176,11 +174,13 @@ public class CacheContext {
         if (cachedAnnoConfig.getExpire() > 0 ) {
             cacheBuilder.expireAfterWrite(cachedAnnoConfig.getExpire(), cachedAnnoConfig.getTimeUnit());
         }
+
         if (cacheBuilder.getConfig().getKeyPrefix() != null) {
             cacheBuilder.setKeyPrefix(cacheBuilder.getConfig().getKeyPrefix() + cacheName);
         } else {
             cacheBuilder.setKeyPrefix(cacheName);
         }
+
         if (!CacheConsts.UNDEFINED_STRING.equals(cachedAnnoConfig.getKeyConvertor())) {
             cacheBuilder.setKeyConvertor(configProvider.parseKeyConvertor(cachedAnnoConfig.getKeyConvertor()));
         }

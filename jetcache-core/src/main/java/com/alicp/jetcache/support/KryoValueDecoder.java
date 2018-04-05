@@ -12,18 +12,22 @@ import java.io.ByteArrayInputStream;
  */
 public class KryoValueDecoder extends AbstractValueDecoder {
 
-    public static final KryoValueDecoder INSTANCE = new KryoValueDecoder();
+    public static final KryoValueDecoder INSTANCE = new KryoValueDecoder(true);
+
+    public KryoValueDecoder(boolean useIdentityNumber) {
+        super(useIdentityNumber);
+    }
 
     @Override
-    public Object apply(byte[] buffer) {
-        try {
-            checkHeader(buffer, KryoValueEncoder.IDENTITY_NUMBER);
-            ByteArrayInputStream in = new ByteArrayInputStream(buffer, 4, buffer.length - 4);
-            Input input = new Input(in);
-            Kryo kryo = KryoValueEncoder.kryoThreadLocal.get();
-            return kryo.readClassAndObject(input);
-        } catch (Exception e) {
-            throw new CacheEncodeException("Kryo decode error: " + e.getMessage(), e);
+    public Object doApply(byte[] buffer) {
+        ByteArrayInputStream in;
+        if (useIdentityNumber) {
+            in = new ByteArrayInputStream(buffer, 4, buffer.length - 4);
+        } else {
+            in = new ByteArrayInputStream(buffer);
         }
+        Input input = new Input(in);
+        Kryo kryo = KryoValueEncoder.kryoThreadLocal.get();
+        return kryo.readClassAndObject(input);
     }
 }
